@@ -74,6 +74,7 @@ def main():
     parser.add_argument('--lim', type=int, default=-1, help='Maximum number of songs to request lyrics for')
     parser.add_argument('--mappings_file', type=str, default='./mxm_779k_matches.txt', help='File to load mappings (MSD -> musixmatch) from')
     parser.add_argument('--start_from', type=str, default='none', help='Name of file containing LastFM info for last track that was processed.')
+    parser.add_argument('--stop_at', type=str, default='none', help='Name of last file to process')
 
     args = parser.parse_args()
     start = False
@@ -96,6 +97,8 @@ def main():
                 for track_name in os.listdir(os.path.join(args.data_dir, subdir, subsubdir, subsubsubdir)):
                     id = track_name[:track_name.rfind('.')]
                     full_filename = os.path.join(args.data_dir, subdir, subsubdir, subsubsubdir, track_name)
+                    if full_filename == args.stop_at:
+                        stop_writing = True
                     if start:
                         if id not in loaded_files:
                             progress_file.write("Lyrics for file weren't scraped: %s\n" % full_filename)
@@ -113,6 +116,7 @@ def main():
                                     continue
                                 if similar_id not in mappings.keys():
                                     print "No mxm mapping for %s"
+                                    continue
                                 while True:
                                     if curr_api_key < len(API_KEYS):
                                         mxm_id = mappings[similar_id]
