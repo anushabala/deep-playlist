@@ -105,6 +105,7 @@ def main():
                         else:
                             ctr +=1
                             if ctr == args.lim:
+                                print "Completed batch (got lyrics for %d tracks)" % args.lim
                                 stop_writing = True
 
                             if ctr % 50 == 0:
@@ -122,7 +123,7 @@ def main():
                                         mxm_id = mappings[similar_id]
                                         status, lyrics = get_lyrics(mxm_id, API_KEYS[curr_api_key])
                                         if status == 200:
-
+                                            loaded_files.append(similar_id)
                                             progress_file.write("Successfully got lyrics for %s (related to %s)\n" % (similar_id, full_filename))
                                             print "Successfully got lyrics for %s (related to %s)" % (similar_id, full_filename)
                                             last_success = full_filename
@@ -142,6 +143,7 @@ def main():
                                             break
                                     else:
                                         progress_file.write("Used up all API keys for today!\n")
+                                        print "Used up all API keys for today!"
                                         stop_writing = True
                                         break
                     else:

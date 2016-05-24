@@ -4,7 +4,7 @@ import os
 import urllib
 import json
 import codecs
-
+from datetime import datetime
 
 API_KEYS=['2fabf028b619a95f4f7be3e74c861605',
           '3a437273d2a492605b7fef2d3ac0fcc8',
@@ -34,6 +34,9 @@ def get_lyrics(track_id, api_key):
 
     return status_code, lyrics
 
+def get_similar(track_info):
+    similars = [s[0] for s in track_info["similars"] if s[1] > 0.05]
+    return similars
 
 def load_mappings(mappings_file):
     mappings = {}
@@ -47,6 +50,15 @@ def load_mappings(mappings_file):
 
     inp.close()
     return mappings
+
+
+def get_already_loaded_tracks(out_dir):
+    tracks = []
+    for f in os.listdir(out_dir):
+        id = f.replace(".txt", "")
+        tracks.append(id)
+
+    return tracks
 
 
 def main():
@@ -72,54 +84,82 @@ def main():
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
+    loaded_files = get_already_loaded_tracks(args.out_dir)
     ctr = 0
+    start_time = datetime.now()
+    total_tracks_so_far = 0
     last_success = None
     stop_writing = False
     for subdir in os.listdir(args.data_dir):
         for subsubdir in os.listdir(os.path.join(args.data_dir, subdir)):
             for subsubsubdir in os.listdir(os.path.join(args.data_dir, subdir, subsubdir)):
                 for track_name in os.listdir(os.path.join(args.data_dir, subdir, subsubdir, subsubsubdir)):
-                    id = track_name[:track_name.rfind('.')]
+                    track_id = track_name[:track_name.rfind('.')]
                     full_filename = os.path.join(args.data_dir, subdir, subsubdir, subsubsubdir, track_name)
                     if full_filename == args.stop_at:
                         stop_writing = True
                     if start:
-                        if id not in mappings.keys():
+                        if track_id not in mappings.keys():
                             progress_file.write("No MSD -> musiXmatch mapping for %s\n" % full_filename)
+                            # print "No MSD -> musiXmatch mapping for %s" % full_filename
                         else:
-                            while True:
-                                if curr_api_key < len(API_KEYS):
-                                    mxm_id = mappings[id]
-                                    status, lyrics = get_lyrics(mxm_id, API_KEYS[curr_api_key])
-                                    if status == 200:
-                                        ctr +=1
-                                        progress_file.write("Successfully got lyrics for %s\n" % full_filename)
-                                        last_success = full_filename
-                                        outfile = codecs.open(args.out_dir+'/'+id+'.txt', 'w', encoding='utf-8')
-                                        outfile.write(lyrics)
-                                        outfile.close()
+                            # print "Getting lyrics for %s and all similar songs" % full_filename
+                            progress_file.write("Getting lyrics for %s and all similar songs\n" % full_filename)
 
-                                        if ctr == args.lim:
-                                            stop_writing = True
+                            similars = get_similar(json.load(codecs.open(full_filename, 'r', encoding='utf-8'), encoding='utf-8'))
+                            similars.insert(0, track_id)
 
-                                        if ctr % 50 == 0:
-                                            print "Finished getting lyrics for %d tracks" % ctr
-                                        break
-                                    elif status == 400 or status == 404 or status == 403:
-                                        progress_file.write("No resource found for %s\n" % full_filename)
-                                        break
-                                    elif status == 401 or status == 402:
-                                        curr_api_key += 1
-                                        progress_file.write("Switching to API key #%d\n" % (curr_api_key+1))
-                                    elif status == NOT_ENGLISH:
-                                        progress_file.write("Not English: %s" % full_filename)
-                                        break
+                            for song_id in similars:
+                                if song_id not in mappings.keys():
+                                    progress_file.write("\tNo MSD -> musiXmatch mapping for %s\n" % song_id)
+                                    # print "\tNo MSD -> musiXmatch mapping for %s" % song_id
+                                elif song_id in loaded_files:
+                                    progress_file.write("\tAlready loaded lyrics for %s\n" % song_id)
+                                    # print "\tAlready loaded lyrics for %s" % song_id
                                 else:
-                                    progress_file.write("Used up all API keys for today!\n")
-                                    stop_writing = True
-                                    break
+                                    while True:
+                                        if curr_api_key < len(API_KEYS):
+                                            mxm_id = mappings[song_id]
+                                            status, lyrics = get_lyrics(mxm_id, API_KEYS[curr_api_key])
+                                            if status == 200:
+                                                loaded_files.append(song_id)
+                                                if song_id == track_id:
+                                                    total_tracks_so_far += 1
+                                                    ctr +=1
+                                                    if ctr % 50 == 0:
+                                                        print "Finished getting lyrics for %d tracks" % ctr
+                                                    if ctr == args.lim:
+                                                        stop_writing = True
+                                                progress_file.write("\tSuccessfully got lyrics for %s\n" % song_id)
+                                                # print "\tSuccessfully got lyrics for %s" % song_id
+                                                last_success = full_filename
+                                                outfile = codecs.open(args.out_dir+'/'+song_id+'.txt', 'w', encoding='utf-8')
+                                                outfile.write(lyrics)
+                                                outfile.close()
+                                                break
+                                            elif status == 400 or status == 404 or status == 403:
+                                                progress_file.write("\tNo resource found for %s\n" % song_id)
+                                                # print "\tNo resource found for %s" % song_id
+                                                break
+                                            elif status == 401 or status == 402:
+                                                curr_api_key += 1
+                                                progress_file.write("\tSwitching to API key #%d\n" % (curr_api_key+1))
+                                                print "\tSwitching to API key #%d" % (curr_api_key+1)
+                                            elif status == NOT_ENGLISH:
+                                                progress_file.write("\tNot English: %s\n" % song_id)
+                                                # print "\tNot English: %s" % song_id
+                                                break
+                                        else:
+                                            progress_file.write("Used up all API keys for today!\n")
+                                            print "Used up all API keys for today!\n"
+                                            stop_writing = True
+                                            break
+
                     else:
+                        if track_id in loaded_files:
+                            total_tracks_so_far += 1
                         if full_filename == args.start_from:
+                            print "Total tracks so far: %d" % total_tracks_so_far
                             progress_file.write("Starting writing from file after %s\n" % full_filename)
                             print "Starting writing from file after %s" % full_filename
                             start = True
@@ -134,10 +174,15 @@ def main():
             break
 
     progress_file.write("Last file successfully written (use this as the --start_from argument for next run): %s\n" % last_success)
+    print "Last file successfully written (use this as the --start_from argument for next run): %s\n" % last_success
     if curr_api_key < len(API_KEYS):
         progress_file.write("Last API key used: #%d\n" % (curr_api_key+1))
 
     progress_file.close()
+
+    end_time = datetime.now()
+    print "Total time taken: %s " % str(end_time - start_time)
+    print "Total tracks processed so far: %d"  % total_tracks_so_far
 
 if __name__ == '__main__':
     main()
