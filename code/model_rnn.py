@@ -4,122 +4,162 @@ from model import LanguageModel
 import math
 from utils import Vocab
 import numpy as np
-
-
+import time
+ 
 class Config:
-    n_class = 5  # ?
-    batch_size = 1
-    embed_size = 10
-    window_size = -1  # ?
+    n_class     = 5 # ?
+    batch_size  = 1
+    embed_size  = 10
+    window_size = -1 # ?
     hidden_size = 5
-    reg = 0
-    max_epochs = 1
-    lr = 0
-    max_steps = -1
-
+    reg         = 0
+    max_epochs  = 1
+    lr          = 0.1
+    max_steps   = -1
 
 class Model_RNN(LanguageModel):
+    
     def load_data(self):
-        pair_fname = '../lastfm_train_mappings.txt'
+        pair_fname  = '../lastfm_train_mappings.txt'
         lyrics_path = '../lyrics/data/lyrics/train/'
-        X_train, y_train, self.word_counts, self.config.max_steps = get_data(pair_fname, lyrics_path, threshold=100,
-                                                                             n_class=self.config.n_class)
-
+    
+        # X_train is a list of all examples. each examples is a 2-len list. each element is a list of words in lyrics.
+        # word_counts is a dictionary that maps 
+        X_train, l_train, self.word_counts, self.config.max_steps = get_data(pair_fname, lyrics_path, threshold=100, n_class=self.config.n_class)
+        self.labels_train = np.zeros((len(X_train),self.config.n_class))
+        self.labels_train[range(len(X_train)),l_train] = 1
+    
         self.vocab = Vocab()
         self.vocab.construct(self.word_counts.keys())
-        self.encoded_train_1 = np.zeros((len(X_train), self.config.max_steps))  # need to handle this better.
+
+        self.encoded_train_1 = np.zeros((len(X_train), self.config.max_steps)) # need to handle this better. 
         self.encoded_train_2 = np.zeros((len(X_train), self.config.max_steps))
         for i in range(len(X_train)):
-            self.encoded_train_1[i, :len(X_train[i][0])] = [self.vocab.encode(word) for word in X_train[i][0]]
-            self.encoded_train_2[i, :len(X_train[i][1])] = [self.vocab.encode(word) for word in X_train[i][1]]
+            self.encoded_train_1[i,:len(X_train[i][0])] = [self.vocab.encode(word) for word in X_train[i][0]]       
+            self.encoded_train_2[i,:len(X_train[i][1])] = [self.vocab.encode(word) for word in X_train[i][1]]       
+
 
     def add_placeholders(self):
-        self.X1 = tf.placeholder(tf.int32, shape=(None, self.config.max_steps), name='X1')
-        self.X2 = tf.placeholder(tf.int32, shape=(None, self.config.max_steps), name='X2')
-        self.y = tf.placeholder(tf.int32, shape=(None, self.config.max_steps), name='y')
-        # self.initial_state = tf.placeholder(tf.float32, shape=(None, self.config.hidden_size), name='initial_state')
-        self.seq_len = tf.placeholder(tf.int32, shape=(None), name='seq_len')  # for variable length sequences
+        self.X1            = tf.placeholder(tf.int32,   shape=(None, self.config.max_steps), name='X1')
+        self.X2            = tf.placeholder(tf.int32,   shape=(None, self.config.max_steps), name='X2')
+        self.labels        = tf.placeholder(tf.float32,   shape=(None, self.config.n_class), name='labels')
+        #self.initial_state = tf.placeholder(tf.float32, shape=(None, self.config.hidden_size), name='initial_state')
+        self.seq_len1      = tf.placeholder(tf.int32,   shape=(None),                        name='seq_len1') # for variable length sequences
+        self.seq_len2      = tf.placeholder(tf.int32,   shape=(None),                        name='seq_len2') # for variable length sequences
 
     def add_embedding(self):
-        L = tf.get_variable('L', shape=(len(self.word_counts.keys()), self.config.embed_size))
-        inputs1 = tf.nn.embedding_lookup(L, self.X1)  # batch_size x
-        inputs2 = tf.nn.embedding_lookup(L, self.X2)
-        inputs1 = tf.split(1, self.config.max_steps, inputs1)
+        L = tf.get_variable('L', shape=(len(self.word_counts.keys()), self.config.embed_size), dtype=tf.float32) 
+        inputs1 = tf.nn.embedding_lookup(L, self.X1) # self.X1 is batch_size x self.config.max_steps 
+        inputs2 = tf.nn.embedding_lookup(L, self.X2) # input2 is batch_size x self.config.max_steps x self.config.embed_size
+        inputs1 = tf.split(1, self.config.max_steps, inputs1) # list of len self.config.max_steps where each element is batch_size x self.config.embed_size
         inputs1 = [tf.squeeze(x) for x in inputs1]
-        inputs2 = tf.split(1, self.config.max_steps, inputs2)
+        inputs2 = tf.split(1, self.config.max_steps, inputs2) # list of len self.config.max_steps where each element is batch_size x self.config.embed_size
         inputs2 = [tf.squeeze(x) for x in inputs2]
+        print 'onh'
+        print inputs1[0].get_shape
         return inputs1, inputs2
 
-    def add_model(self, inputs1, inputs2, seq_len):
-        # self.initial_state = tf.constant(np.zeros(()), dtype=tf.float32)
-        self.lstm = tf.nn.rnn_cell.BasicLSTMCell(self.config.hidden_size)  # RNN
-        self.initial_state = self.lstm.zero_state(self.config.batch_size, tf.float32)
-        rnn_outputs1, _ = tf.nn.rnn(self.lstm, inputs1, initial_state=self.initial_state, sequence_length=seq_len)
-        rnn_outputs2, _ = tf.nn.rnn(self.lstm, inputs2, initial_state=self.initial_state, sequence_length=seq_len)
-        rnn_outputs1 = [x[-1] for x in outputs1]
-        rnn_outputs2 = [x[-1] for x in outputs2]
-        rnn_nutputs = tf.concat(1, [rnn_outputs1, rnn_output2])
+    def add_model(self, inputs1, inputs2, seq_len1, seq_len2):
+        #self.initial_state = tf.constant(np.zeros(()), dtype=tf.float32)
+        print 'adsf add_model'
+        self.initial_state = tf.constant(np.zeros((self.config.batch_size,self.config.hidden_size)), dtype=tf.float32)
+        rnn_outputs  = []
+        rnn_outputs1 = []
+        rnn_outputs2 = []
+        h_curr1 = self.initial_state
+        h_curr2 = self.initial_state
+        print 'nthgnghn'
+        with tf.variable_scope('rnn'):
+            Whh = tf.get_variable('Whh', shape=(self.config.hidden_size,self.config.hidden_size), dtype=tf.float32)
+            Wxh = tf.get_variable('Wxh', shape=(self.config.embed_size,self.config.hidden_size),  dtype=tf.float32)
+            b1  = tf.get_variable('bhx', shape=(self.config.hidden_size,),                        dtype=tf.float32)
+            print Wxh.get_shape
+            print inputs1[0].get_shape
+            print inputs2[0].get_shape
+            for i in range(self.config.max_steps):
+                h_curr2 = tf.matmul(h_curr2,Whh) 
+                h_curr2 += tf.matmul(inputs2[i],Wxh)
+                h_curr2 += b1
+                h_curr2 = tf.sigmoid(h_curr2)
 
-        return rnn_outputs
+                h_curr1 = tf.sigmoid(tf.matmul(h_curr1,Whh) + tf.matmul(inputs1[i],Wxh) + b1)
+                rnn_outputs1.append(h_curr1)
+                rnn_outputs2.append(h_curr2)
+        
+        rnn_states = [tf.concat(1, [rnn_outputs1[i], rnn_outputs2[i]]) for i in range(self.config.max_steps)]
+        return rnn_states
 
-    def add_final_projection(self, rnn_outputs):
+    def add_projection(self, rnn_states):
         # rnn_outputs is a list of length batch_size of lengths = seq_len. Where each list element is ??. I think.
-        Whc = tf.get_variable('Whc', shape=(2 * self.config.hidden_size, self.config.n_class))
+        Whc = tf.get_variable('Whc', shape=(2*self.config.hidden_size,self.config.n_class))
         bhc = tf.get_variable('bhc', shape=(self.config.n_class,))
-        final_outputs = [tf.matmul(x[-1], Whc) + bhc for x in rnn_outputs]
-        return final_outputs
+        projections = tf.matmul(rnn_states[-1],Whc) + bhc # in case we stop short sequences, the rnn_state in further time_steps should be unch
+        return projections
 
-    def add_loss(self, outputs):
-        loss = tf.sequence_loss([output], [self.y], tf.ones_like(self.y, dtype=tf.float32))
+    def add_loss_op(self, y):
+        loss = tf.nn.softmax_cross_entropy_with_logits(y, self.labels)
+        loss = tf.reduce_sum(loss)
         return loss
-
+      
     def add_training_op(self, loss):
-        train_op = tf.train.AdamOptimizer(learning_rate=self.config.lr).minimize(loss)
+        #train_op = tf.train.AdamOptimizer(learning_rate=self.config.lr).minimize(loss)
+        train_op = tf.train.GradientDescentOptimizer(learning_rate=self.config.lr).minimize(loss)
         return train_op
 
     def __init__(self, config):
         self.config = config
         self.load_data()
         self.add_placeholders()
-        self.inputs1, self.inputs2 = self.add_embedding()
-        self.rnn_outputs = self.add_model(self.inputs1, self.inputs2, self.seq_len)
-        self.final_outputs = self.add_final_projection()
-        self.predictions = [tf.nn.softmax(tf.cast(x, 'float64')) for x in
-                            self.final_outputs]  # to avoid numerical errors
-        self.calculate_loss = self.add_loss_op(outputs)
-        self.train_step = self.add_training_op(self.calculate_loss)
 
-    def run_epoch(self, session, X, y):  # X and y are 2D np arrays
+        print 'adsf __init__'
+        print self.X1.get_shape
+        self.inputs1, self.inputs2 = self.add_embedding()
+        self.rnn_states            = self.add_model(self.inputs1, self.inputs2, self.seq_len1, self.seq_len2)
+        self.projections           = self.add_projection(self.rnn_states)
+        self.loss                  = self.add_loss_op(self.projections)
+        self.train_step            = self.add_training_op(self.loss)
+        self.predictions           = tf.argmax(tf.nn.softmax(self.projections),1)
+        self.correct_predictions   = tf.equal(self.predictions,tf.argmax(self.labels,1))
+        self.correct_predictions   = tf.reduce_sum(tf.cast(self.correct_predictions, 'int32'))
+        
+
+    def run_epoch(self, session, X1, X2, labels, train_op, verbose=10): # X and y are 2D np arrays
+        print 'adsf run_epoch'
         config = self.config
-        state = tf.zeros([batch_size, lstm.state_size])
-        data_len = np.shape(X)[0]
+        #state = tf.zeros([self.config.batch_size, self.config.hidden_size])
+        state = self.initial_state.eval()
+        data_len = np.shape(X1)[0]
         index = np.arange(data_len)
         np.random.shuffle(index)
-        n_batches = data_len // self.config.batch_size
-
+        n_batches  = data_len // self.config.batch_size
+        
         loss = 0.0
         for batch_num in range(n_batches):
-
-            X_batch = X[index[batch_num * batch_size: (batch_num + 1) * batch_size], :]
-            y_batch = y[index[batch_num * batch_size: (batch_num + 1) * batch_size], :]
-            state = tf.constant(np.zeros(len(X_batch, self.config.hidden_size)), dtype=tf.float32)
-
-            feed_dict = {self.X1: x_batch[:, 0],
-                         self.X2: x_batch[:, 1],
-                         self.y: y_batch,
-                         self.initial_state: state}
-
-            loss, state, _ = session.run([self.loss, self.final_state, train_op], feed_dict=feed_dict)
+            print 'sadf batch_num', str(batch_num)    
+            x1_batch = X1[index[batch_num * self.config.batch_size : (batch_num+1) * self.config.batch_size], :]
+            x2_batch = X2[index[batch_num * self.config.batch_size : (batch_num+1) * self.config.batch_size], :]
+            seq_len_batch1 = [1 for i in range(X1.shape[0])]
+            seq_len_batch2 = [1 for i in range(X1.shape[0])]
+            labels_batch = labels[index[batch_num * self.config.batch_size : (batch_num+1) * self.config.batch_size]]
+            print 'qwer', x1_batch.shape
+            print 'qwer', x2_batch.shape
+            feed_dict = {self.X1: x1_batch,
+                         self.X2: x2_batch,
+                         self.labels: labels_batch,
+                         self.seq_len1: seq_len_batch1, 
+                         self.seq_len2: seq_len_batch2} 
+                         #self.initial_state: state}
+            
+            loss, total_correct, _ = session.run([self.loss, self.correct_predictions, train_op], feed_dict=feed_dict)
             total_loss.append(loss)
-
-            if verbose and (batch_num + 1) % verbose == 0:
-                sys.stdout.write('\r{} / {} : pp = {}'.format(batch_num + 1, n_batches, np.exp(np.mean(total_loss))))
+            
+            if verbose and (batch_num+1)%verbose==0:
+                sys.stdout.write('\r{} / {} : pp = {}'.format(batch_num+1, n_batches, np.exp(np.mean(total_loss))))
                 sys.stdout.flush()
             if verbose:
                 sys.stdout.write('\r')
-
+            
             return np.exp(np.mean(total_loss))
-
 
 def run():
     config = Config()
@@ -127,33 +167,33 @@ def run():
     # We create the training model and generative model
     with tf.variable_scope('Model_RNN') as scope:
         model = Model_RNN(config)
-        print 'asdf'
         init = tf.initialize_all_variables()
         saver = tf.train.Saver()
-    exit()
+    print '1111'
     with tf.Session() as session:
         best_val_pp = float('inf')
         best_val_epoch = 0
-
+        print '2222'
+  
         session.run(init)
+        print '3333'
         for epoch in xrange(config.max_epochs):
             print 'Epoch {}'.format(epoch)
             start = time.time()
             ###
             train_pp = model.run_epoch(
-                session, model.encoded_train,
+                session, model.encoded_train_1, model.encoded_train_2, model.labels_train,
                 train_op=model.train_step)
-            # valid_pp = model.run_epoch(session, model.encoded_valid)
+            #valid_pp = model.run_epoch(session, model.encoded_valid)
             print 'Training perplexity: {}'.format(train_pp)
-            # print 'Validation perplexity: {}'.format(valid_pp)
-            # if valid_pp < best_val_pp:
-            # best_val_pp = valid_pp
-            # best_val_epoch = epoch
-            # saver.save(session, './ptb_rnnlm.weights')
-            # if epoch - best_val_epoch > config.early_stopping:
-            # break
+            #print 'Validation perplexity: {}'.format(valid_pp)
+            #if valid_pp < best_val_pp:
+                #best_val_pp = valid_pp
+                #best_val_epoch = epoch
+                #saver.save(session, './ptb_rnnlm.weights')
+            #if epoch - best_val_epoch > config.early_stopping:
+                #break
             print 'Total time: {}'.format(time.time() - start)
 
-
-if __name__ == '__main__':
+if __name__=='__main__':
     run()
