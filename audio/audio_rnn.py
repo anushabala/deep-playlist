@@ -190,6 +190,7 @@ class AudioModel(object):
                 print "\titer (%d/%d):\tLoss: %2.4f\tTrain accuracy:%2.2f" % (
                 i+1, num_iters, loss, float(num_correct) / self.config.batch_size)
 
+        epoch_loss /= num_iters
         return epoch_loss, total_correct
 
 
