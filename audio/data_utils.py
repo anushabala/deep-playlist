@@ -89,6 +89,8 @@ def get_audio_data(audio_config, directory, wav_dir, filter_set=None, max_files=
     ctr = 0
     max_seq_len = audio_config.max_seq_len
     all_data = {}
+    if not os.path.exists(wav_dir):
+        os.makedirs(wav_dir)
     for name in os.listdir(directory):
         if ".mp3" not in name:
             continue
