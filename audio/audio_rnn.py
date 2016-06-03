@@ -48,7 +48,7 @@ class AudioModel(object):
 
         self.X1_train = self.X1_all[train_idxes]
         self.X2_train = self.X2_all[train_idxes]
-        self.labels = self.labels_all[train_idxes]
+        self.labels_train = self.labels_all[train_idxes]
 
         self.X1_val = self.X1_all[val_idxes]
         self.X2_val = self.X2_all[val_idxes]
@@ -66,10 +66,11 @@ class AudioModel(object):
         conv_out1 = self.X1_batch
         conv_out2 = self.X2_batch
         self.conv_seq_length = self.config.max_seq_len
-        if self.config.filter_size > 0:
+        self.input_dimension = self.config.input_dimension
+        if self.config.filter_height > 0 and self.config.filter_width:
             conv_out1, conv_out2 = self.add_conv(self.X1_batch, self.X2_batch)
-            self.conv_seq_length = self.config.max_seq_len - self.config.filter_size + 1
-
+            self.conv_seq_length = self.config.max_seq_len - self.config.filter_height + 1
+            self.input_dimension = self.config.input_dimension - self.config.filter_width + 1
         inputs1, inputs2 = self.reshape_batch(conv_out1, conv_out2)
         self.final_states_1, self.final_states_2 = self.add_model(inputs1, inputs2)
         self.output = self.add_fc_layer(self.final_states_1, self.final_states_2)
@@ -104,12 +105,12 @@ class AudioModel(object):
     def add_conv(self, inputs1, inputs2):
         inputs1 = tf.expand_dims(inputs1, -1)
         inputs2 = tf.expand_dims(inputs2, -1)
-        filter_size = (self.config.filter_size,1,1,1)
+        filter_size = (self.config.filter_height, self.config.filter_width, 1, 1)
         with tf.variable_scope('ConvLayer'):
             filter = tf.get_variable('ConvFilter', shape=filter_size, initializer=tf.truncated_normal_initializer())
 
-        conv_out1 = tf.nn.conv2d(inputs1, filter, strides=[1,1,1,1], padding="VALID")
-        conv_out2 = tf.nn.conv2d(inputs2, filter, strides=[1,1,1,1], padding="VALID")
+        conv_out1 = tf.nn.conv2d(inputs1, filter, strides=[1, 1, 1, 1], padding="VALID")
+        conv_out2 = tf.nn.conv2d(inputs2, filter, strides=[1, 1, 1, 1], padding="VALID")
 
         conv_out1 = tf.squeeze(conv_out1, squeeze_dims=[3])
         conv_out2 = tf.squeeze(conv_out2, squeeze_dims=[3])
@@ -128,7 +129,7 @@ class AudioModel(object):
 
     def add_model(self, inputs1, inputs2):
         with tf.variable_scope("LSTMLayer"):
-            self.lstm = tf.nn.rnn_cell.LSTMCell(self.config.hidden_size/2, input_size=self.config.input_dimension, initializer=tf.truncated_normal_initializer())
+            self.lstm = tf.nn.rnn_cell.LSTMCell(self.config.hidden_size/2, input_size=self.input_dimension, initializer=tf.truncated_normal_initializer())
 
         current_states_1 = self.lstm.zero_state(self.batch_size, dtype='float32')
         print current_states_1
@@ -164,15 +165,23 @@ class AudioModel(object):
     def add_fc_layer(self, final_states_1, final_states_2):
         with tf.variable_scope('fc_layer'):
             # todo maybe try uniform_unit_scaling_initializer?
-            W = tf.get_variable('W', shape=(self.config.hidden_size * 2, self.config.num_labels),
-                                initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
+            if self.config.combine_type == 'diff':
+                # difference betweeen states
+                W = tf.get_variable('W', shape=(self.config.hidden_size, self.config.num_labels),
+                                    initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
+                combined_states = tf.abs(final_states_1 - final_states_2) # absolute difference betwen the two states
+            else:
+                # default to concatenating
+                W = tf.get_variable('W', shape=(self.config.hidden_size * 2, self.config.num_labels),
+                                    initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
+                combined_states = tf.concat(1, [final_states_1, final_states_2])
 
             b = tf.get_variable('b', shape=(self.config.num_labels,),
                                 initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
 
-            concat_states = tf.concat(1, [final_states_1, final_states_2])
 
-            output = tf.matmul(concat_states, W) + b
+
+            output = tf.matmul(combined_states, W) + b
 
         return output
 
@@ -191,10 +200,10 @@ class AudioModel(object):
         sm = tf.nn.softmax(output)
         return tf.argmax(sm, 1)
 
-    def evaluate(self, session):
-        X1 = self.X1_val
-        X2 = self.X2_val
-        labels = self.labels_val
+    def evaluate(self, session, X1, X2, labels):
+        # X1 = self.X1_val
+        # X2 = self.X2_val
+        # labels = self.labels_val
         num_examples = np.shape(X1)[0]
         batch_size = min(self.config.batch_size, num_examples)
         num_iters = int(math.ceil(float(num_examples) / batch_size))
@@ -292,7 +301,9 @@ class AudioModel(object):
 
 def run(data_config, model_config):
     stats_file = data_config.stats_file
-    eval_info = {"train_loss":[], "val_loss":[], "train_acc":[], "val_acc":[]}
+    checkpoint_name = data_config.params_file
+    eval_info = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "data_params": data_config.to_json(),
+                 "model_params": model_config.to_json()}
     start_setup = datetime.now()
     if config.verbose:
         print "Starting model setup.."
@@ -304,14 +315,28 @@ def run(data_config, model_config):
 
     train_start = datetime.now()
 
-    if config.verbose:
-        print "Started model training.."
+    saver = tf.train.Saver()
     with tf.Session() as session:
         session.run(init)
-        # todo load val data and check accuracy
+
+        # evaluate train and val data once before training
+        print "Before training:"
+
+        init_train_loss, init_train_acc = model.evaluate(session, model.X1_train, model.X2_train, model.labels_train)
+        eval_info["train_loss"].append((0, init_train_loss))
+        eval_info["train_acc"].append((0, init_train_acc))
+        print "\tTraining loss: %2.4f\tTraining accuracy: %2.4f" % (init_train_loss, init_train_acc)
+
+        init_val_loss, init_val_acc = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val)
+        eval_info["val_loss"].append((0, init_val_loss))
+        eval_info["val_acc"].append((0, init_val_acc))
+        print "\tValidation loss: %2.4f\tValidation accuracy: %2.4f" % (init_val_loss, init_val_acc)
+
+        if config.verbose:
+            print "Started model training.."
         for epoch in xrange(model_config.num_epochs):
             num_examples = model.X1_train.shape[0]
-            epoch_loss, total_correct = model.run_epoch(session, model.X1_train, model.X2_train, model.labels,
+            epoch_loss, total_correct = model.run_epoch(session, model.X1_train, model.X2_train, model.labels_train,
                                                         print_every=config.print_every)
             train_acc = float(total_correct)/num_examples
 
@@ -319,11 +344,17 @@ def run(data_config, model_config):
             eval_info["train_acc"].append((epoch, train_acc))
             if epoch % config.anneal_every:
                 config.lr = config.lr * config.anneal_by
+
             if epoch % config.evaluate_every == 0:
-                val_loss, val_accuracy = model.evaluate(session)
+                val_loss, val_accuracy = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val)
                 eval_info["val_loss"].append((epoch, val_loss))
                 eval_info["val_acc"].append((epoch, val_accuracy))
                 print "\tValidation loss: %2.4f\tValidation accuracy: %2.4f" % (val_loss, val_accuracy)
+
+            if epoch % data_config.save_every == 0:
+                # save model and loss/acc histories so we don't lose information when an early stop occurs
+                saver.save(session, checkpoint_name, global_step=epoch)
+                json.dump(eval_info, open(stats_file, 'w'))
 
             print "Epoch (%d/%d) completed:\tTotal loss: %2.4f\tTrain accuracy: %2.4f\tTime: %s" % (epoch+1, config.num_epochs,
                                                                                                     epoch_loss,
@@ -349,7 +380,9 @@ if __name__ == "__main__":
     parser.add_argument('--reg', type=float, default=0)
     parser.add_argument('--hidden_size', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=5)
-    parser.add_argument('--filter_height', type=int, default=11, help='Size of filter for convolutional layer. '
+    parser.add_argument('--filter_height', type=int, default=11, help='Height of filter for convolutional layer. '
+                                                                      'If 0 or less than 0, no convolutional layer is applied.')
+    parser.add_argument('--filter_width', type=int, default=1, help='Width of filter for convolutional layer. '
                                                                       'If 0 or less than 0, no convolutional layer is applied.')
     # parser.add_argument('')
     parser.add_argument('--epochs', type=int, default=5)
@@ -362,6 +395,9 @@ if __name__ == "__main__":
     parser.add_argument('--anneal_by', type=float, default=0.95, help='Amount to anneal learning rate by')
     parser.add_argument('--anneal_every', type=int, default=1, help='# of epochs to anneal after')
     parser.add_argument('--stats_file', type=str, default='../eval_stats.json', help='file to log stats to')
+    parser.add_argument('--combine_type', type=str, choices=['concat', 'diff'], default='concat', help='How to combine final hidden states.')
+    parser.add_argument('--checkpoints_name', type=str, default='params/audio-model')
+    parser.add_argument('--save_every', type=int, default=1, help='Number of epochs after which to save params')
 
     args = parser.parse_args()
     data_config = DataConfig(max_examples=args.max_examples,
@@ -373,7 +409,9 @@ if __name__ == "__main__":
                              save_data=args.save_data,
                              reload_data=args.reload_data,
                              stats_file=args.stats_file,
-                             train_split=args.train_split)
+                             train_split=args.train_split,
+                             params_file=args.checkpoints_name,
+                             save_every=args.save_every)
     config = ModelConfig(learning_rate=args.lr,
                          reg=args.reg,
                          max_audio_len=args.max_audio_len,
@@ -387,6 +425,8 @@ if __name__ == "__main__":
                          anneal_every=args.anneal_every,
                          use_fft=args.use_fft,
                          time_block=args.time_block,
-                         filter_size=args.filter_height)
+                         filter_height=args.filter_height,
+                         filter_width=args.filter_width,
+                         combine_type=args.combine_type)
 
     run(data_config, config)
