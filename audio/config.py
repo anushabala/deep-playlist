@@ -20,13 +20,17 @@ class DataConfig:
 
 class ModelConfig:
     def __init__(self, model_type='lstm', learning_rate=0.001, reg=0, hidden_size=100, num_epochs=5, verbose=False,
-                 batch_size=5, sampling_rate=22050, block_size=11025, use_fft=True, max_audio_len=15, num_labels=2,
-                 print_every=5, evaluate_every=1, anneal_every=1, anneal_by=0.95):
+                 batch_size=5, sampling_rate=22050, time_block=None, block_size=11025, use_fft=True, max_audio_len=15, num_labels=2,
+                 print_every=5, evaluate_every=1, anneal_every=1, anneal_by=0.95, filter_size=11):
         self.sampling_rate = sampling_rate
-        self.block_size = block_size
+        if time_block:
+            self.block_size = time_block * sampling_rate
+        else:
+            self.block_size = block_size
+
         self.use_fft = use_fft
         self.max_audio_len = max_audio_len # seconds
-        self.max_seq_len = (sampling_rate * max_audio_len)/block_size
+        self.max_seq_len = (sampling_rate * max_audio_len)/self.block_size
         self.model_type = model_type
         self.lr = learning_rate
         self.reg = reg
@@ -34,9 +38,11 @@ class ModelConfig:
         self.batch_size = batch_size
         self.num_labels = num_labels
         self.num_epochs = num_epochs
-        self.input_dimension = self.block_size * 2 if use_fft else self.block_size
+        self.input_dimension = self.block_size
+        # self.input_dimension = self.block_size * 2 if use_fft else self.block_size
         self.verbose = verbose
         self.print_every = print_every
         self.evaluate_every = evaluate_every
         self.anneal_every = anneal_every
         self.anneal_by = anneal_by
+        self.filter_size = filter_size

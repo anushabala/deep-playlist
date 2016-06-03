@@ -70,7 +70,7 @@ def time_blocks_to_fft_blocks(blocks):
     fft_blocks = []
     for block in blocks:
         fft_block = np.fft.fft(block)
-        new_block = np.concatenate((np.real(fft_block), np.imag(fft_block)))
+        new_block = np.abs(fft_block)
         fft_blocks.append(new_block)
 
     return fft_blocks

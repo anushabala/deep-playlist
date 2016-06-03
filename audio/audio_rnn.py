@@ -62,7 +62,15 @@ class AudioModel(object):
         if self.config.verbose:
             print "\tAdding ops..."
         self.add_placeholders()
-        inputs1, inputs2 = self.reshape_batch()
+
+        conv_out1 = self.X1_batch
+        conv_out2 = self.X2_batch
+        self.conv_seq_length = self.config.max_seq_len
+        if self.config.filter_size > 0:
+            conv_out1, conv_out2 = self.add_conv(self.X1_batch, self.X2_batch)
+            self.conv_seq_length = self.config.max_seq_len - self.config.filter_size + 1
+
+        inputs1, inputs2 = self.reshape_batch(conv_out1, conv_out2)
         self.final_states_1, self.final_states_2 = self.add_model(inputs1, inputs2)
         self.output = self.add_fc_layer(self.final_states_1, self.final_states_2)
         self.loss = self.add_loss_op(self.output)
@@ -93,13 +101,29 @@ class AudioModel(object):
                                              name='seq_lengths_X2')
         self.batch_size = tf.placeholder(dtype='int32')
 
-    def reshape_batch(self):
-        inputs1 = tf.split(split_dim=1, num_split=self.config.max_seq_len, value=self.X1_batch)
-        inputs2 = tf.split(split_dim=1, num_split=self.config.max_seq_len, value=self.X2_batch)
+    def add_conv(self, inputs1, inputs2):
+        inputs1 = tf.expand_dims(inputs1, -1)
+        inputs2 = tf.expand_dims(inputs2, -1)
+        filter_size = (self.config.filter_size,1,1,1)
+        with tf.variable_scope('ConvLayer'):
+            filter = tf.get_variable('ConvFilter', shape=filter_size, initializer=tf.truncated_normal_initializer())
+
+        conv_out1 = tf.nn.conv2d(inputs1, filter, strides=[1,1,1,1], padding="VALID")
+        conv_out2 = tf.nn.conv2d(inputs2, filter, strides=[1,1,1,1], padding="VALID")
+
+        conv_out1 = tf.squeeze(conv_out1, squeeze_dims=[3])
+        conv_out2 = tf.squeeze(conv_out2, squeeze_dims=[3])
+        print "Shape after convolutional layer:", conv_out1
+
+        return conv_out1, conv_out2
+
+    def reshape_batch(self, inp1, inp2):
+        inputs1 = tf.split(split_dim=1, num_split=self.conv_seq_length, value=inp1)
+        inputs2 = tf.split(split_dim=1, num_split=self.conv_seq_length, value=inp2)
         inputs1 = [tf.squeeze(x, squeeze_dims=[1]) for x in inputs1]
         inputs2 = [tf.squeeze(x, squeeze_dims=[1]) for x in inputs2]
-        # if self.config.verbose:
-        #     print "Shape of data after split/squeeze ops:", inputs1
+        if self.config.verbose:
+            print "Shape of data after split/squeeze ops:", inputs1
         return inputs1, inputs2
 
     def add_model(self, inputs1, inputs2):
@@ -110,12 +134,10 @@ class AudioModel(object):
         print current_states_1
         current_states_2 = self.lstm.zero_state(self.batch_size, dtype='float32')
         with tf.variable_scope("LSTMLayer"):
-            _, final_states_1 = tf.nn.rnn(self.lstm, inputs1, initial_state=current_states_1,
-                                          sequence_length=self.seq_lengths_X1)
+            _, final_states_1 = tf.nn.rnn(self.lstm, inputs1, initial_state=current_states_1)
 
         with tf.variable_scope("LSTMLayer", reuse=True):
-            _, final_states_2 = tf.nn.rnn(self.lstm, inputs2, initial_state=current_states_2,
-                                          sequence_length=self.seq_lengths_X2)
+            _, final_states_2 = tf.nn.rnn(self.lstm, inputs2, initial_state=current_states_2)
 
         # for i in xrange(0, self.config.max_seq_len):
         #     x1_t = inputs1[i]
@@ -162,7 +184,7 @@ class AudioModel(object):
         return loss
 
     def add_training_op(self, loss):
-        optimizer = tf.train.AdamOptimizer(learning_rate=self.config.lr)
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.config.lr)
         return optimizer.minimize(loss)
 
     def compute_predictions(self, output):
@@ -191,14 +213,14 @@ class AudioModel(object):
             shuffled_X1 = X1[shuffled_idxes[batch_size * i: upper_bound]]
             shuffled_X2 = X2[shuffled_idxes[batch_size * i: upper_bound]]
             shuffled_y = labels[shuffled_idxes[batch_size * i: upper_bound]]
-            seq_lengths_X1 = compute_lengths(self.config, shuffled_X1)
-            seq_lengths_X2 = compute_lengths(self.config, shuffled_X2)
+            # seq_lengths_X1 = compute_lengths(self.config, shuffled_X1)
+            # seq_lengths_X2 = compute_lengths(self.config, shuffled_X2)
 
             feed_dict = {self.X1_batch: shuffled_X1,
                          self.X2_batch: shuffled_X2,
                          self.y_batch: shuffled_y,
-                         self.seq_lengths_X1: seq_lengths_X1,
-                         self.seq_lengths_X2: seq_lengths_X2,
+                         # self.seq_lengths_X1: seq_lengths_X1,
+                         # self.seq_lengths_X2: seq_lengths_X2,
                          self.batch_size: this_batch_size}
 
             loss, predictions = session.run([self.loss, self.predictions], feed_dict=feed_dict)
@@ -232,11 +254,11 @@ class AudioModel(object):
             shuffled_X1 = X1[shuffled_idxes[self.config.batch_size * i: upper_bound]]
             shuffled_X2 = X2[shuffled_idxes[self.config.batch_size * i: upper_bound]]
             shuffled_y = labels[shuffled_idxes[self.config.batch_size * i: upper_bound]]
-            seq_lengths_X1 = compute_lengths(self.config, shuffled_X1)
+            # seq_lengths_X1 = compute_lengths(self.config, shuffled_X1)
             # print "Computing sequence lengths for X1"
             # print shuffled_X1
             # print seq_lengths_X1
-            seq_lengths_X2 = compute_lengths(self.config, shuffled_X2)
+            # seq_lengths_X2 = compute_lengths(self.config, shuffled_X2)
 
             # print "Computing sequence lengths for X2"
             # print shuffled_X2
@@ -245,10 +267,9 @@ class AudioModel(object):
             feed_dict = {self.X1_batch: shuffled_X1,
                          self.X2_batch: shuffled_X2,
                          self.y_batch: shuffled_y,
-                         self.seq_lengths_X1: seq_lengths_X1,
-                         self.seq_lengths_X2: seq_lengths_X2,
+                         # self.seq_lengths_X1: seq_lengths_X1,
+                         # self.seq_lengths_X2: seq_lengths_X2,
                          self.batch_size: batch_size}
-
             loss, predictions, _ = session.run([self.loss, self.predictions, self.train_op], feed_dict=feed_dict)
             # print states1
             # print states2
@@ -328,8 +349,13 @@ if __name__ == "__main__":
     parser.add_argument('--reg', type=float, default=0)
     parser.add_argument('--hidden_size', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=5)
+    parser.add_argument('--filter_height', type=int, default=11, help='Size of filter for convolutional layer. '
+                                                                      'If 0 or less than 0, no convolutional layer is applied.')
+    # parser.add_argument('')
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--use_fft', action='store_true')
+    parser.add_argument('--time_block', type=float, default=1.0)
     parser.add_argument('--print_every', type=int, default=5, help='# of iterations after which to print status')
     parser.add_argument('--evaluate_every', type=int, default=1, help='# of epochs after which to evaluate on validation data')
     parser.add_argument('--train_split', type=float, default=0.8, help='% of data to use as training data')
@@ -338,7 +364,6 @@ if __name__ == "__main__":
     parser.add_argument('--stats_file', type=str, default='../eval_stats.json', help='file to log stats to')
 
     args = parser.parse_args()
-
     data_config = DataConfig(max_examples=args.max_examples,
                              pickle_file=args.pickle_file,
                              mp3_dir=args.mp3_dir,
@@ -359,6 +384,9 @@ if __name__ == "__main__":
                          print_every=args.print_every,
                          evaluate_every=args.evaluate_every,
                          anneal_by=args.anneal_by,
-                         anneal_every=args.anneal_every)
+                         anneal_every=args.anneal_every,
+                         use_fft=args.use_fft,
+                         time_block=args.time_block,
+                         filter_size=args.filter_height)
 
     run(data_config, config)
