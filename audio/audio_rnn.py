@@ -17,16 +17,35 @@ def load_data(audio_config, data_config):
 
 
 def compute_lengths(config, X):
-        num_examples = min(config.batch_size, X.shape[0])
-        seq_lengths = np.zeros(shape=(num_examples))
-        for i in xrange(0, num_examples):
-            for j in xrange(0, config.max_seq_len):
-                x_t = X[i][j]
-                if not np.equal(x_t, -1 * np.ones_like(x_t)).all():
-                    seq_lengths[i] = j+1
-                else:
-                    break
-        return seq_lengths
+    num_examples = min(config.batch_size, X.shape[0])
+    seq_lengths = np.zeros(shape=(num_examples))
+    for i in xrange(0, num_examples):
+        for j in xrange(0, config.max_seq_len):
+            x_t = X[i][j]
+            if not np.equal(x_t, -1 * np.ones_like(x_t)).all():
+                seq_lengths[i] = j + 1
+            else:
+                break
+    return seq_lengths
+
+
+def update_stats(predictions, true_labels, stats_map):
+    for (pred, true) in zip(predictions, true_labels):
+        if true == 0 and pred == 0:
+            stats_map["tn"] += 1
+        if true == 0 and pred == 1:
+            stats_map["fp"] += 1
+        if true == 1 and pred == 0:
+            stats_map["fn"] += 1
+        if true == 1 and pred == 1:
+            stats_map["tp"] += 1
+
+
+def get_precision_recall(stats_map):
+    precision = stats_map["tp"]/(stats_map["tp"] + stats_map["fp"])
+    recall = stats_map["tp"]/(stats_map["tp"] + stats_map["fn"])
+
+    return precision, recall
 
 
 class AudioModel(object):
@@ -44,7 +63,7 @@ class AudioModel(object):
 
         num_train = int(num_examples * data_config.train_split)
         train_idxes = indexes[0:num_train]
-        val_idxes = indexes[num_train+1:]
+        val_idxes = indexes[num_train + 1:]
 
         self.X1_train = self.X1_all[train_idxes]
         self.X2_train = self.X2_all[train_idxes]
@@ -57,7 +76,7 @@ class AudioModel(object):
         if self.config.verbose:
             print "\tFinished loading dataset. Training data shape: ", self.X1_train.shape
             print "\tTest data shape: ", self.X1_val.shape
-            print "\tTime taken: {}".format(str(datetime.now()-start_time))
+            print "\tTime taken: {}".format(str(datetime.now() - start_time))
 
         if self.config.verbose:
             print "\tAdding ops..."
@@ -66,11 +85,10 @@ class AudioModel(object):
         conv_out1 = self.X1_batch
         conv_out2 = self.X2_batch
         self.conv_seq_length = self.config.max_seq_len
-        self.input_dimension = self.config.input_dimension
-        if self.config.filter_height > 0 and self.config.filter_width:
-            conv_out1, conv_out2 = self.add_conv(self.X1_batch, self.X2_batch)
-            self.conv_seq_length = self.config.max_seq_len - self.config.filter_height + 1
-            self.input_dimension = self.config.input_dimension - self.config.filter_width + 1
+        self.conv_output_dimension = self.config.input_dimension
+        if min(self.config.filter_heights) > 0 and min(self.config.filter_widths) > 0:
+            conv_out1, conv_out2 = self.add_conv_layers(self.X1_batch, self.X2_batch)
+
         inputs1, inputs2 = self.reshape_batch(conv_out1, conv_out2)
         self.final_states_1, self.final_states_2 = self.add_model(inputs1, inputs2)
         self.output = self.add_fc_layer(self.final_states_1, self.final_states_2)
@@ -102,16 +120,39 @@ class AudioModel(object):
                                              name='seq_lengths_X2')
         self.batch_size = tf.placeholder(dtype='int32')
 
-    def add_conv(self, inputs1, inputs2):
+    def add_conv_layers(self, inputs1, inputs2):
         inputs1 = tf.expand_dims(inputs1, -1)
         inputs2 = tf.expand_dims(inputs2, -1)
-        filter_size = (self.config.filter_height, self.config.filter_width, 1, 1)
-        with tf.variable_scope('ConvLayer'):
-            filter = tf.get_variable('ConvFilter', shape=filter_size, initializer=tf.truncated_normal_initializer())
+        filters = zip(self.config.filter_heights, self.config.filter_widths)
 
-        conv_out1 = tf.nn.conv2d(inputs1, filter, strides=[1, 1, 1, 1], padding="VALID")
-        conv_out2 = tf.nn.conv2d(inputs2, filter, strides=[1, 1, 1, 1], padding="VALID")
+        seq_length = self.config.max_seq_len
+        out_dim = self.config.input_dimension
+        conv_out_length = seq_length
+        conv_out_dim = out_dim
+        conv_out1 = inputs1
+        conv_out2 = inputs2
+        # self.conv_seq_length = self.config.max_seq_len - self.config.filter_height + 1
+        #     self.input_dimension = self.config.input_dimension - self.config.filter_width + 1
 
+        for idx, (height, width) in enumerate(filters):
+            filter_size = (height, width, 1, 1)
+            with tf.variable_scope('ConvLayer'):
+                filter = tf.get_variable('ConvFilter%d' % idx, shape=filter_size,
+                                         initializer=tf.truncated_normal_initializer())
+
+                conv_out1 = tf.nn.conv2d(inputs1, filter, strides=[1, 1, 1, 1], padding="VALID")
+                conv_out2 = tf.nn.conv2d(inputs2, filter, strides=[1, 1, 1, 1], padding="VALID")
+
+            conv_out_length = seq_length - height + 1
+            conv_out_dim = out_dim - width + 1
+
+            seq_length = conv_out_length
+            out_dim = conv_out_dim
+            inputs1 = conv_out1
+            inputs2 = conv_out2
+
+        self.conv_seq_length = conv_out_length
+        self.conv_output_dimension = conv_out_dim
         conv_out1 = tf.squeeze(conv_out1, squeeze_dims=[3])
         conv_out2 = tf.squeeze(conv_out2, squeeze_dims=[3])
         print "Shape after convolutional layer:", conv_out1
@@ -129,7 +170,8 @@ class AudioModel(object):
 
     def add_model(self, inputs1, inputs2):
         with tf.variable_scope("LSTMLayer"):
-            self.lstm = tf.nn.rnn_cell.LSTMCell(self.config.hidden_size/2, input_size=self.input_dimension, initializer=tf.truncated_normal_initializer())
+            self.lstm = tf.nn.rnn_cell.LSTMCell(self.config.hidden_size / 2, input_size=self.conv_output_dimension,
+                                                initializer=tf.truncated_normal_initializer())
 
         current_states_1 = self.lstm.zero_state(self.batch_size, dtype='float32')
         print current_states_1
@@ -140,22 +182,6 @@ class AudioModel(object):
         with tf.variable_scope("LSTMLayer", reuse=True):
             _, final_states_2 = tf.nn.rnn(self.lstm, inputs2, initial_state=current_states_2)
 
-        # for i in xrange(0, self.config.max_seq_len):
-        #     x1_t = inputs1[i]
-        #     x2_t = inputs2[i]
-        #     with tf.variable_scope("LSTMLayer", reuse=True):
-        #         _, new_states_1 = self.lstm(x1_t, current_states_1)
-        #         _, new_states_2 = self.lstm(x2_t, current_states_2)
-        #
-        #     for j in xrange(0, self.config.batch_size):
-        #         # if audio sequence has already ended, don't update final hidden state any further
-        #         if tf.cast(tf.not_equal(tf.reduce_sum(tf.cast(tf.not_equal(x1_t[j,:], 0.0), dtype='int32')), 0), dtype='int32') == 1:
-        #             final_states_1[j] = new_states_1[j]
-        #         if tf.cast(tf.not_equal(tf.reduce_sum(tf.cast(tf.not_equal(x2_t[j,:], 0.0), dtype='int32')), 0), dtype='int32') == 1:
-        #             final_states_2[j] = new_states_2[j]
-        #
-        #     current_states_1 = new_states_1
-        #     current_states_2 = new_states_2
 
         if self.config.verbose:
             print "Completed add_model setup. Final states:", final_states_1
@@ -169,7 +195,7 @@ class AudioModel(object):
                 # difference betweeen states
                 W = tf.get_variable('W', shape=(self.config.hidden_size, self.config.num_labels),
                                     initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
-                combined_states = tf.abs(final_states_1 - final_states_2) # absolute difference betwen the two states
+                combined_states = tf.abs(final_states_1 - final_states_2)  # absolute difference betwen the two states
             else:
                 # default to concatenating
                 W = tf.get_variable('W', shape=(self.config.hidden_size * 2, self.config.num_labels),
@@ -178,8 +204,6 @@ class AudioModel(object):
 
             b = tf.get_variable('b', shape=(self.config.num_labels,),
                                 initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
-
-
 
             output = tf.matmul(combined_states, W) + b
 
@@ -200,7 +224,7 @@ class AudioModel(object):
         sm = tf.nn.softmax(output)
         return tf.argmax(sm, 1)
 
-    def evaluate(self, session, X1, X2, labels):
+    def evaluate(self, session, X1, X2, labels, summary_stats={}):
         # X1 = self.X1_val
         # X2 = self.X2_val
         # labels = self.labels_val
@@ -237,15 +261,16 @@ class AudioModel(object):
 
             assert len(predictions) == this_batch_size
             num_correct = np.sum(predictions == shuffled_y)
+            update_stats(predictions, shuffled_y, summary_stats)
 
             total_correct += num_correct
 
         val_loss /= num_examples
-        accuracy = float(total_correct)/num_examples
+        accuracy = float(total_correct) / num_examples
 
         return val_loss, accuracy
 
-    def run_epoch(self, session, X1, X2, labels, print_every=5):
+    def run_epoch(self, session, X1, X2, labels, summary_stats, print_every=5):
         num_examples = np.shape(X1)[0]
 
         num_iters = int(math.ceil(float(num_examples) / self.config.batch_size))
@@ -280,18 +305,16 @@ class AudioModel(object):
                          # self.seq_lengths_X2: seq_lengths_X2,
                          self.batch_size: batch_size}
             loss, predictions, _ = session.run([self.loss, self.predictions, self.train_op], feed_dict=feed_dict)
-            # print states1
-            # print states2
             epoch_loss += loss
-            # print predictions
-            # print shuffled_y
 
             assert len(predictions) == batch_size
             num_correct = np.sum(predictions == shuffled_y)
             total_correct += num_correct
+            update_stats(predictions, shuffled_y, summary_stats)
+
             if i % print_every == 0:
                 sys.stdout.write("\r\titer (%d/%d):\tLoss: %2.4f\tTrain accuracy:%2.2f" % (
-                    i+1, num_iters, loss/batch_size, float(num_correct) / batch_size))
+                    i + 1, num_iters, loss / batch_size, float(num_correct) / batch_size))
                 sys.stdout.flush()
 
         epoch_loss /= num_examples
@@ -303,7 +326,7 @@ def run(data_config, model_config):
     stats_file = data_config.stats_file
     checkpoint_name = data_config.params_file
     eval_info = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "data_params": data_config.to_json(),
-                 "model_params": model_config.to_json()}
+                 "model_params": model_config.to_json(), "train_stats":[], "val_stats":[]}
     start_setup = datetime.now()
     if config.verbose:
         print "Starting model setup.."
@@ -321,49 +344,68 @@ def run(data_config, model_config):
 
         # evaluate train and val data once before training
         print "Before training:"
-
-        init_train_loss, init_train_acc = model.evaluate(session, model.X1_train, model.X2_train, model.labels_train)
+        epoch_train_stats = {"tp": 0.0, "tn": 0.0, "fp": 0.0, "fn": 0.0}
+        init_train_loss, init_train_acc = model.evaluate(session, model.X1_train, model.X2_train, model.labels_train, summary_stats=epoch_train_stats)
         eval_info["train_loss"].append((0, init_train_loss))
         eval_info["train_acc"].append((0, init_train_acc))
-        print "\tTraining loss: %2.4f\tTraining accuracy: %2.4f" % (init_train_loss, init_train_acc)
+        eval_info["train_stats"].append((0, epoch_train_stats))
+        train_prec, train_recall = get_precision_recall(epoch_train_stats)
+        print "\tTraining loss: %2.4f\tAccuracy: %2.4f\tPrecision: %2.4f\tRecall: %2.4f" % (init_train_loss, init_train_acc, train_prec, train_recall)
 
-        init_val_loss, init_val_acc = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val)
+        val_stats = {"tp": 0.0, "tn": 0.0, "fp": 0.0, "fn": 0.0}
+        init_val_loss, init_val_acc = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val, summary_stats=val_stats)
         eval_info["val_loss"].append((0, init_val_loss))
         eval_info["val_acc"].append((0, init_val_acc))
-        print "\tValidation loss: %2.4f\tValidation accuracy: %2.4f" % (init_val_loss, init_val_acc)
+        eval_info["val_stats"].append((0, val_stats))
+        val_prec, val_recall = get_precision_recall(val_stats)
+        print "\tValidation loss: %2.4f\tAccuracy: %2.4f\tPrecision: %2.4f\tRecall: %2.4f" % (init_val_loss, init_val_acc, val_prec, val_recall)
 
         if config.verbose:
             print "Started model training.."
         for epoch in xrange(model_config.num_epochs):
+            epoch_train_stats = {"tp": 0.0, "tn": 0.0, "fp": 0.0, "fn": 0.0}
+
             num_examples = model.X1_train.shape[0]
             epoch_loss, total_correct = model.run_epoch(session, model.X1_train, model.X2_train, model.labels_train,
+                                                        summary_stats=epoch_train_stats,
                                                         print_every=config.print_every)
-            train_acc = float(total_correct)/num_examples
+            train_acc = float(total_correct) / num_examples
 
             eval_info["train_loss"].append((epoch, epoch_loss))
             eval_info["train_acc"].append((epoch, train_acc))
+            eval_info["train_stats"].append((epoch, epoch_train_stats))
+            train_prec, train_recall = get_precision_recall(epoch_train_stats)
+
             if epoch % config.anneal_every:
                 config.lr = config.lr * config.anneal_by
 
             if epoch % config.evaluate_every == 0:
-                val_loss, val_accuracy = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val)
+                val_stats = {"tp": 0.0, "tn": 0.0, "fp": 0.0, "fn": 0.0}
+                val_loss, val_accuracy = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val, summary_stats=val_stats)
                 eval_info["val_loss"].append((epoch, val_loss))
                 eval_info["val_acc"].append((epoch, val_accuracy))
-                print "\tValidation loss: %2.4f\tValidation accuracy: %2.4f" % (val_loss, val_accuracy)
+                eval_info["val_stats"].append((epoch,val_stats))
+                val_prec, val_recall = get_precision_recall(val_stats)
+                print "\tValidation loss: %2.4f\tValidation accuracy: %2.4f\tPrecision: %2.4f\tRecall:%2.4f" % (
+                    val_loss, val_accuracy, val_prec, val_recall)
 
             if epoch % data_config.save_every == 0:
                 # save model and loss/acc histories so we don't lose information when an early stop occurs
                 saver.save(session, checkpoint_name, global_step=epoch)
                 json.dump(eval_info, open(stats_file, 'w'))
 
-            print "Epoch (%d/%d) completed:\tTotal loss: %2.4f\tTrain accuracy: %2.4f\tTime: %s" % (epoch+1, config.num_epochs,
-                                                                                                    epoch_loss,
-                                                                                                    train_acc,
-                                                                                                    str(datetime.now() - train_start))
+            print "Epoch (%d/%d) completed:\tTotal loss: %2.4f\tTrain accuracy: %2.4f\tPrecision: %2.4f\tRecall: %2.4f\tTime: %s" % (
+                epoch + 1, config.num_epochs,
+                epoch_loss,
+                train_acc,
+                train_prec,
+                train_recall,
+                str(datetime.now() - train_start))
 
     print "Finished training. Time taken: {}".format(datetime.now() - train_start)
 
     json.dump(eval_info, open(stats_file, 'w'))
+
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -380,22 +422,28 @@ if __name__ == "__main__":
     parser.add_argument('--reg', type=float, default=0)
     parser.add_argument('--hidden_size', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=5)
-    parser.add_argument('--filter_height', type=int, default=11, help='Height of filter for convolutional layer. '
-                                                                      'If 0 or less than 0, no convolutional layer is applied.')
-    parser.add_argument('--filter_width', type=int, default=1, help='Width of filter for convolutional layer. '
-                                                                      'If 0 or less than 0, no convolutional layer is applied.')
+    parser.add_argument('--filter_heights', nargs='+', default=[11], type=int,
+                        help='Height of filter for convolutional layer. '
+                             'If 0 or less than 0, no convolutional layer is applied. '
+                             'Specify one value for each convolutional layer.')
+    parser.add_argument('--filter_widths', type=int, nargs='+', default=[1],
+                        help='Width of filter for convolutional layer. '
+                             'If 0 or less than 0, no convolutional layer is applied. '
+                             'Specify one value for each convolutional layer')
     # parser.add_argument('')
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--use_fft', action='store_true')
     parser.add_argument('--time_block', type=float, default=1.0)
     parser.add_argument('--print_every', type=int, default=5, help='# of iterations after which to print status')
-    parser.add_argument('--evaluate_every', type=int, default=1, help='# of epochs after which to evaluate on validation data')
+    parser.add_argument('--evaluate_every', type=int, default=1,
+                        help='# of epochs after which to evaluate on validation data')
     parser.add_argument('--train_split', type=float, default=0.8, help='% of data to use as training data')
     parser.add_argument('--anneal_by', type=float, default=0.95, help='Amount to anneal learning rate by')
     parser.add_argument('--anneal_every', type=int, default=1, help='# of epochs to anneal after')
     parser.add_argument('--stats_file', type=str, default='../eval_stats.json', help='file to log stats to')
-    parser.add_argument('--combine_type', type=str, choices=['concat', 'diff'], default='concat', help='How to combine final hidden states.')
+    parser.add_argument('--combine_type', type=str, choices=['concat', 'diff'], default='concat',
+                        help='How to combine final hidden states.')
     parser.add_argument('--checkpoints_name', type=str, default='params/audio-model')
     parser.add_argument('--save_every', type=int, default=1, help='Number of epochs after which to save params')
 
@@ -425,8 +473,8 @@ if __name__ == "__main__":
                          anneal_every=args.anneal_every,
                          use_fft=args.use_fft,
                          time_block=args.time_block,
-                         filter_height=args.filter_height,
-                         filter_width=args.filter_width,
+                         filter_height=args.filter_heights,
+                         filter_width=args.filter_widths,
                          combine_type=args.combine_type)
 
     run(data_config, config)

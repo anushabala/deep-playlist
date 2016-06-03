@@ -50,8 +50,8 @@ class ModelConfig:
         self.evaluate_every = evaluate_every
         self.anneal_every = anneal_every
         self.anneal_by = anneal_by
-        self.filter_height = filter_height
-        self.filter_width = filter_width
+        self.filter_heights = filter_height
+        self.filter_widths = filter_width
         self.combine_type = combine_type
 
     def to_json(self):
