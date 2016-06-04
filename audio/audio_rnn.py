@@ -30,6 +30,7 @@ def compute_lengths(config, X):
 
 
 def update_stats(predictions, true_labels, stats_map):
+    # print predictions, true_labels
     for (pred, true) in zip(predictions, true_labels):
         if true == 0 and pred == 0:
             stats_map["tn"] += 1
@@ -40,10 +41,17 @@ def update_stats(predictions, true_labels, stats_map):
         if true == 1 and pred == 1:
             stats_map["tp"] += 1
 
+    # print stats_map
 
 def get_precision_recall(stats_map):
-    precision = stats_map["tp"]/(stats_map["tp"] + stats_map["fp"])
-    recall = stats_map["tp"]/(stats_map["tp"] + stats_map["fn"])
+    if (stats_map["tp"] + stats_map["fp"]) > 0:
+        precision = stats_map["tp"]/(stats_map["tp"] + stats_map["fp"])
+    else:
+        precision = 0.0
+    if (stats_map["tp"] + stats_map["fn"]) > 0:
+        recall = stats_map["tp"]/(stats_map["tp"] + stats_map["fn"])
+    else:
+        recall = 0.0
 
     return precision, recall
 
@@ -196,6 +204,8 @@ class AudioModel(object):
                 W = tf.get_variable('W', shape=(self.config.hidden_size, self.config.num_labels),
                                     initializer=tf.truncated_normal_initializer(), dtype=tf.float32)
                 combined_states = tf.abs(final_states_1 - final_states_2)  # absolute difference betwen the two states
+                if self.config.normalize:
+                    combined_states = tf.nn.l2_normalize(combined_states, dim=1)
             else:
                 # default to concatenating
                 W = tf.get_variable('W', shape=(self.config.hidden_size * 2, self.config.num_labels),
@@ -224,7 +234,7 @@ class AudioModel(object):
         sm = tf.nn.softmax(output)
         return tf.argmax(sm, 1)
 
-    def evaluate(self, session, X1, X2, labels, summary_stats={}):
+    def evaluate(self, session, X1, X2, labels, summary_stats):
         # X1 = self.X1_val
         # X2 = self.X2_val
         # labels = self.labels_val
@@ -362,15 +372,19 @@ def run(data_config, model_config):
 
         if config.verbose:
             print "Started model training.."
+
+        best_val_loss = init_val_loss
+
         for epoch in xrange(model_config.num_epochs):
             epoch_train_stats = {"tp": 0.0, "tn": 0.0, "fp": 0.0, "fn": 0.0}
 
             num_examples = model.X1_train.shape[0]
-            epoch_loss, total_correct = model.run_epoch(session, model.X1_train, model.X2_train, model.labels_train,
+            # epoch_loss, train_acc = \
+            model.run_epoch(session, model.X1_train, model.X2_train, model.labels_train,
                                                         summary_stats=epoch_train_stats,
                                                         print_every=config.print_every)
-            train_acc = float(total_correct) / num_examples
-
+            # train_acc = float(total_correct) / num_examples
+            epoch_loss, train_acc = model.evaluate(session, model.X1_train, model.X2_train, model.labels_train, summary_stats=epoch_train_stats)
             eval_info["train_loss"].append((epoch, epoch_loss))
             eval_info["train_acc"].append((epoch, train_acc))
             eval_info["train_stats"].append((epoch, epoch_train_stats))
@@ -382,6 +396,9 @@ def run(data_config, model_config):
             if epoch % config.evaluate_every == 0:
                 val_stats = {"tp": 0.0, "tn": 0.0, "fp": 0.0, "fn": 0.0}
                 val_loss, val_accuracy = model.evaluate(session, model.X1_val, model.X2_val, model.labels_val, summary_stats=val_stats)
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    saver.save(session, checkpoint_name+'.best')
                 eval_info["val_loss"].append((epoch, val_loss))
                 eval_info["val_acc"].append((epoch, val_accuracy))
                 eval_info["val_stats"].append((epoch,val_stats))
@@ -446,6 +463,7 @@ if __name__ == "__main__":
                         help='How to combine final hidden states.')
     parser.add_argument('--checkpoints_name', type=str, default='params/audio-model')
     parser.add_argument('--save_every', type=int, default=1, help='Number of epochs after which to save params')
+    parser.add_argument('--normalize', action='store_true', help='Normalize differences before passing to fc')
 
     args = parser.parse_args()
     data_config = DataConfig(max_examples=args.max_examples,
@@ -475,6 +493,7 @@ if __name__ == "__main__":
                          time_block=args.time_block,
                          filter_height=args.filter_heights,
                          filter_width=args.filter_widths,
-                         combine_type=args.combine_type)
+                         combine_type=args.combine_type,
+                         normalize=args.normalize)
 
     run(data_config, config)

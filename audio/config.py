@@ -26,7 +26,8 @@ class DataConfig:
 class ModelConfig:
     def __init__(self, model_type='lstm', learning_rate=0.001, reg=0, hidden_size=100, num_epochs=5, verbose=False,
                  batch_size=5, sampling_rate=22050, time_block=None, block_size=11025, use_fft=True, max_audio_len=15, num_labels=2,
-                 print_every=5, evaluate_every=1, anneal_every=1, anneal_by=0.95, filter_height=11, filter_width=1, combine_type='concat'):
+                 print_every=5, evaluate_every=1, anneal_every=1, anneal_by=0.95, filter_height=11, filter_width=1,
+                 combine_type='concat', normalize=False):
         self.sampling_rate = sampling_rate
         if time_block:
             self.block_size = time_block * sampling_rate
@@ -53,6 +54,7 @@ class ModelConfig:
         self.filter_heights = filter_height
         self.filter_widths = filter_width
         self.combine_type = combine_type
+        self.normalize = normalize
 
     def to_json(self):
         return {k:v for (k,v) in self.__dict__.items()}
