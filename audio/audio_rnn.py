@@ -455,7 +455,7 @@ if __name__ == "__main__":
     parser.add_argument('--print_every', type=int, default=5, help='# of iterations after which to print status')
     parser.add_argument('--evaluate_every', type=int, default=1,
                         help='# of epochs after which to evaluate on validation data')
-    parser.add_argument('--train_split', type=float, default=0.8, help='% of data to use as training data')
+    parser.add_argument('--train_split', type=float, default=0.8, help='%% of data to use as training data')
     parser.add_argument('--anneal_by', type=float, default=0.95, help='Amount to anneal learning rate by')
     parser.add_argument('--anneal_every', type=int, default=1, help='# of epochs to anneal after')
     parser.add_argument('--stats_file', type=str, default='../eval_stats.json', help='file to log stats to')
